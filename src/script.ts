@@ -135,10 +135,11 @@ async function getData() {
   const file = await fs.readFile(process.cwd() + `/${filePath}`, "utf8");
   const rawData: Quiz[] = JSON.parse(file);
 
+  // Валидируем наш .json фаил. Структура должна быть правильной
   const result = QuizSchema.safeParse(rawData);
 
   if (!result.success) {
-    console.error("Ошибка валидации:", result.error.format());
+    console.error("Ошибка валидации:", result.error.flatten());
     process.exit(1);
   }
   const { data } = result;
