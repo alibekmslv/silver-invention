@@ -1,11 +1,19 @@
+import { promises as fs } from "fs";
 import path from "path";
 import { google } from "googleapis";
 import { authenticate } from "@google-cloud/local-auth";
+import { Quiz, QuizSchema } from "./schemas";
 
-async function runSample() {
+async function main() {
+  const data = await getData();
+
   const authClient = await authenticate({
     keyfilePath: path.resolve(process.cwd(), "credentials.json"),
-    scopes: "https://www.googleapis.com/auth/forms.body",
+    scopes: [
+      "https://www.googleapis.com/auth/drive",
+      "https://www.googleapis.com/auth/drive.file",
+      "https://www.googleapis.com/auth/forms.body",
+    ],
   });
 
   const { forms } = google.forms({
@@ -13,32 +21,23 @@ async function runSample() {
     auth: authClient,
   });
 
-  const createResponse = await forms.create({
+  const response = await forms.create({
     requestBody: {
       info: {
-        title: "Creating a new form in Node with Typescript",
+        title: data.title,
+        documentTitle: data.title,
       },
     },
   });
 
-  // res.data выглядит вот так
-  // {
-  //   formId: '1cbMJQgOlb2mlrOg3ip58LmXQ7CoHkJrC9HFqwf0RQpQ',
-  //   info: { title: 'TITLE', documentTitle: 'Untitled form' },
-  //   settings: { emailCollectionType: 'DO_NOT_COLLECT' },
-  //   revisionId: '00000002',
-  //   responderUri: 'https://docs.google.com/forms/d/e/1FAIpQLSdS2WRuC0w5wZ__m1RLBdfckWaM6ynfAXeN1sT6C7SbDLwd8g/viewform',
-  //   publishSettings: { publishState: { isPublished: true, isAcceptingResponses: true } }
-  // }
-
-  const formId = createResponse.data.formId;
+  const { formId } = response.data;
 
   if (!formId) {
     throw new Error("formId is null or undefined");
   }
 
-  //
-  const formToQuiz = await forms.batchUpdate({
+  // Превращаем форму в квиз
+  await forms.batchUpdate({
     formId,
     requestBody: {
       requests: [
@@ -56,16 +55,15 @@ async function runSample() {
     },
   });
 
-  // Update form description
-  const formDescription = await forms.batchUpdate({
+  // Добавляем форме описание
+  await forms.batchUpdate({
     formId: formId,
     requestBody: {
       requests: [
         {
           updateFormInfo: {
             info: {
-              description:
-                "Please complete this quiz based on this week's readings for class.",
+              description: data.description,
             },
             updateMask: "description",
           },
@@ -74,50 +72,78 @@ async function runSample() {
     },
   });
 
-  const formQuestions = await forms.batchUpdate({
+  await forms.batchUpdate({
     formId,
     requestBody: {
-      requests: [
-        {
+      requests: data.questions.map(({ title, options, answer }, index) => {
+        const rightAnswer = options.find(({ option }) => option === answer)
+          ?.value!;
+
+        return {
           createItem: {
             item: {
-              title:
-                "Which of these singers was not a member of Destiny's Child?",
+              title: `${index + 1}. ${title}`,
               questionItem: {
                 question: {
                   required: true,
                   grading: {
                     pointValue: 1,
                     correctAnswers: {
-                      answers: [{ value: "Rihanna" }],
+                      answers: [{ value: `${answer}) ${rightAnswer}` }],
                     },
                     whenRight: { text: "You got it!" },
                     whenWrong: { text: "Sorry, that's wrong" },
                   },
                   choiceQuestion: {
                     type: "RADIO",
-                    options: [
-                      { value: "Kelly Rowland" },
-                      { value: "Beyoncé" },
-                      { value: "Rihanna" },
-                      { value: "Michelle Williams" },
-                    ],
+                    options: options.map(({ option, value }) => {
+                      return {
+                        value: `${option}) ${value}`,
+                      };
+                    }),
                   },
                 },
               },
             },
             location: {
-              index: 0,
+              index: index,
             },
           },
-        },
-      ],
+        };
+      }),
     },
   });
 
-  console.log(formQuestions.data);
+  console.log("Success!");
+  console.log(formId);
 
-  return formQuestions.data;
+  return formId;
 }
 
-runSample();
+async function getData() {
+  const args = process.argv.slice(2);
+  const filePathArg = args.find((arg) => arg.startsWith("--filePath="));
+
+  if (!filePathArg) {
+    console.log("Флаг --filePath не указан.");
+    process.exit(1);
+  }
+
+  const filePath = filePathArg.split("=")[1];
+  console.log("Файл:", filePath);
+
+  const file = await fs.readFile(process.cwd() + `/${filePath}`, "utf8");
+  const rawData: Quiz[] = JSON.parse(file);
+
+  const result = QuizSchema.safeParse(rawData);
+
+  if (!result.success) {
+    console.error("Ошибка валидации:", result.error.format());
+    process.exit(1);
+  }
+  const { data } = result;
+
+  return data;
+}
+
+main();
